@@ -42,7 +42,7 @@ public final class PatchRunner {
         try {
             String installed = state.installedVersion();
             String installedPatcherVersion = state.installedPatcherVersion();
-            String currentPatcherVersion = plugin.getDescription().getVersion();
+            String currentPatcherVersion = plugin.getPluginMeta().getVersion();
 
             ModrinthClient.ReleaseInfo latest = modrinth.fetchLatest(projectSlug);
             log.accept("Latest upstream release on Modrinth: " + latest.versionNumber() + " (" + latest.fileName() + ")");

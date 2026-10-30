@@ -7,7 +7,7 @@ original plugin's code.
 ## WARNING: Made with AI (cuz idk how to use Java)
 ## PLEASE SUPPORT [THE ORIGINAL DEVELOPER](https://github.com/AnsonEyre)
 
-I am a random dev, and you should really not trust random stuff you find on the Internet. Take a look at the source code which is only a few hundred lines long. (click on the GitHub "view source" link on the side). And if you prefer, compile the project yourself with `mvn clean package` (requires Java JDK 21+ and Maven installed).
+I am a random dev, and you should really not trust random stuff you find on the Internet. Take a look at the source code which is only a few hundred lines long. (click on the GitHub "view source" link on the side). And if you prefer, compile the project yourself with `gradle clean shadowJar` (requires a Java 25 JDK and Gradle).
 
 ## What it actually does, on your own server, every boot
 
@@ -49,8 +49,8 @@ diff) would be the cleanest outcome for everyone.
 
 1. Install [PacketEvents](https://modrinth.com/plugin/packetevents) and
    Geyser and/or Floodgate, same as Geyser Recipe Fix normally requires.
-2. Build this project: `./gradlew build`, then drop
-   `build/libs/GeyserRecipeFixPatcher-1.0.0.jar` into your `plugins/`
+2. Build this project (see "Building from source" below), then drop
+   `build/libs/GeyserRecipeFixPatcher-<version>.jar` into your `plugins/`
    folder. (Do **not** manually download/place GeyserRecipeFix.jar
    yourself - this plugin manages that file.)
 3. Start the server once. GeyserRecipeFixPatcher will download, patch, and
@@ -83,13 +83,30 @@ watch for a GeyserRecipeFixPatcher update in that case.
 
 ## Building from source
 
-Requires JDK 21 and internet access to Maven Central + repo.papermc.io
-(for `paper-api` and the Mojang-mapped NMS dev bundle used only to compile
-the small helper classes that get injected - see `PATCHES.md`).
+Requires **JDK 25** (Minecraft 26.x needs Java 25, and the 26.x dev bundle is
+Java 25 bytecode), Gradle 9+, and internet access to Maven Central,
+repo.papermc.io and the Gradle plugin portal (for the Paper API / Mojang-mapped
+NMS dev bundle used only to compile the small helper classes that get
+injected - see `PATCHES.md`).
 
 ```
-./gradlew build
+gradle clean shadowJar
 ```
+
+The output is `build/libs/GeyserRecipeFixPatcher-<version>.jar`.
+
+### Supported versions
+
+Built against and verified for **Paper and Folia 26.3** (Minecraft 26.3,
+Java 25). `plugin.yml` declares `api-version: '26.1'`, and the NMS calls used
+are checked against the 26.3 server source, so it is also expected to load on
+26.1.x/26.2 - but only 26.3 is what the current build is aimed at. PacketEvents
+and Geyser must of course be builds that support the same Minecraft version.
+
+### Updating the patcher
+
+Bump `version` in `build.gradle` whenever the patch logic changes (the version
+is what triggers an automatic re-patch - see "Re-patching").
 
 This project was written and reviewed carefully, but hasn't been build- and
 run-tested against a live Paper/Folia server in the environment it was

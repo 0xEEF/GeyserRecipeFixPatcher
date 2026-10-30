@@ -1,7 +1,7 @@
 name: GeyserRecipeFixPatcher
 version: '${version}'
 main: net.sideways_sky.geyserrecipefixpatcher.GeyserRecipeFixPatcherPlugin
-api-version: '1.20'
+api-version: '26.1'
 folia-supported: true
 author: you
 description: >

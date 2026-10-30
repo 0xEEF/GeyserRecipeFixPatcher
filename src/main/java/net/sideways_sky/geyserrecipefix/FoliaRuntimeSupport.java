@@ -27,7 +27,7 @@ public final class FoliaRuntimeSupport {
         if (Geyser_Recipe_Fix.logger != null) {
             Geyser_Recipe_Fix.logger.info(folia
                     ? "[GeyserRecipeFixPatcher] Detected Folia - region/entity-aware scheduling is active."
-                    : "[GeyserRecipeFixPatcher] Running on Paper/Spigot - using the standard scheduler.");
+                    : "[GeyserRecipeFixPatcher] Running on Paper - using the standard scheduler.");
         }
     }
 

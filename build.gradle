@@ -3,14 +3,14 @@ plugins {
     id 'com.gradleup.shadow' version '8.3.5'
     // Gives us an accurate, Mojang-mapped compile classpath (NMS classes
     // like ServerPlayer/AnvilMenu/AbstractContainerMenu) for the helper and
-    // stub classes below. Modern Paper (1.20.5+) already ships those
-    // Mojang-mapped names at runtime, so no reobfuscation step is needed -
-    // this is dev-time only.
-    id 'io.papermc.paperweight.userdev' version '2.0.0-beta.19'
+    // stub classes below. Paper/Folia 26.1+ ship Mojang-mapped (unobfuscated)
+    // server code at runtime and paperweight no longer reobfuscates, so this
+    // is dev-time only. 2.0.0-beta.20+ is required for the 26.x dev bundles.
+    id 'io.papermc.paperweight.userdev' version '2.0.0-beta.24'
 }
 
 group = 'net.sideways_sky.geyserrecipefixpatcher'
-version = '1.0.0'
+version = '1.2.0'
 
 repositories {
     mavenCentral()
@@ -21,14 +21,23 @@ dependencies {
     // Note: paperDevBundle already includes the full mapped Paper API, so
     // it replaces a plain paper-api dependency here rather than sitting
     // alongside one (avoids two copies of the Bukkit API on the classpath).
-    compileOnly paperweight.paperDevBundle("1.21.8-R0.1-SNAPSHOT")
+    //
+    // 26.x uses "<minecraft version>.build.<n>" dev bundle versions (before
+    // 26.1 it was "1.21.x-R0.1-SNAPSHOT"). "26.3.build.+" tracks the newest
+    // 26.3 build; Folia runs the same Mojang-mapped names, so a Paper bundle
+    // is the right thing to compile against for both.
+    compileOnly paperweight.paperDevBundle("26.3.build.+")
 
-    implementation 'org.ow2.asm:asm:9.7.1'
-    implementation 'org.ow2.asm:asm-tree:9.7.1'
-    implementation 'org.ow2.asm:asm-commons:9.7.1'
+    // 9.9+ so a future upstream jar built for a newer Java than 21 can
+    // still be read (older ASM rejects class files newer than it knows).
+    implementation 'org.ow2.asm:asm:9.9.1'
+    implementation 'org.ow2.asm:asm-tree:9.9.1'
+    implementation 'org.ow2.asm:asm-commons:9.9.1'
 }
 
-def targetJavaVersion = 21
+// Minecraft 26.x requires Java 25, and the 26.x dev bundle is Java 25
+// bytecode, so javac needs --release 25 to read it.
+def targetJavaVersion = 25
 java {
     def javaVersion = JavaVersion.toVersion(targetJavaVersion)
     sourceCompatibility = javaVersion
@@ -63,6 +72,20 @@ tasks.register('bundleInjectedClasses', Copy) {
     include 'net/sideways_sky/geyserrecipefix/FoliaRuntimeSupport.class'
     include 'net/sideways_sky/geyserrecipefix/events/FoliaAnvilBridge.class'
     include 'net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class'
+
+    // Guard: every injected class must be exactly ONE .class file. A nested,
+    // inner or anonymous class (Outer$Inner.class) would be a second file
+    // that neither this task nor JarPatcher copies into the patched jar, so
+    // the feature would die at runtime with NoClassDefFoundError. Fail the
+    // build instead of shipping that. (Lambdas are fine - they don't create files.)
+    doFirst {
+        def classesDir = tasks.named('compileJava').get().destinationDirectory.get().asFile
+        def nested = fileTree(classesDir) { include 'net/sideways_sky/geyserrecipefix/**/*$*.class' }
+        if (!nested.isEmpty()) {
+            throw new GradleException('Injected classes must not have nested/inner/anonymous classes, but found: '
+                    + nested.files*.name.join(', '))
+        }
+    }
 }
 
 tasks.named('processResources') {
@@ -80,6 +103,13 @@ tasks.named('shadowJar') {
     // gives each plugin its own isolated classloader, so bundling ASM
     // un-relocated in our own jar won't collide with another plugin's copy.
     exclude 'net/sideways_sky/geyserrecipefix/**'
+}
+
+// shadowJar uses an empty classifier (so the final file is simply
+// GeyserRecipeFixPatcher-<version>.jar); give the plain jar its own
+// classifier so the two tasks can never write the same file.
+tasks.named('jar') {
+    archiveClassifier.set('plain')
 }
 
 tasks.named('build') {

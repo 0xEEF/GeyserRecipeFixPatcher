@@ -6,14 +6,10 @@ import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.inventory.AnvilMenu;
 import net.minecraft.world.inventory.ContainerLevelAccess;
 import net.sideways_sky.geyserrecipefix.Geyser_Recipe_Fix;
-import org.bukkit.Bukkit;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
-
-import java.lang.reflect.Method;
-import java.util.function.Consumer;
 
 /**
  * Original code contributed by GeyserRecipeFixPatcher.
@@ -28,17 +24,16 @@ import java.util.function.Consumer;
  * exactly like the original inline lambda used to.
  *
  * The goal is functionally identical to what the original single-threaded
- * scheduler call did, just safe to run on Folia: instead of assuming the
- * global/main-thread scheduler may touch the player, it prefers the
- * per-entity scheduler (via reflection, so this still compiles and runs
- * fine on plain Paper/Spigot where that API doesn't exist) and falls back
- * to the plain Bukkit scheduler otherwise.
+ * scheduler call did, just safe to run on Folia: everything touching the
+ * player is run through the player's own entity scheduler, which is the
+ * region thread on Folia and the main thread on Paper.
+ *
+ * (The legacy BukkitScheduler is deliberately not used anywhere: Folia
+ * throws UnsupportedOperationException for it. This project is compiled
+ * against the 26.x Paper API, where Entity#getScheduler() always exists,
+ * so no reflection or fallback is needed.)
  */
 public final class FoliaAnvilBridge {
-
-    private static volatile Method getSchedulerMethod;
-    private static volatile Method runDelayedMethod;
-    private static volatile boolean entitySchedulerUnavailable = false;
 
     private FoliaAnvilBridge() {
     }
@@ -49,57 +44,34 @@ public final class FoliaAnvilBridge {
             // out quietly for any other HumanEntity implementation.
             return;
         }
-        runOneTickLater(player, () -> {
+        runOnPlayerThread(player, 1L, () -> {
             player.closeInventory();
             PaperEvents.forwardSkips.add(player);
             openRealAnvil(player);
         });
     }
 
-    private static void runOneTickLater(Player player, Runnable task) {
-        if (!entitySchedulerUnavailable) {
-            try {
-                if (getSchedulerMethod == null) {
-                    getSchedulerMethod = player.getClass().getMethod("getScheduler");
-                }
-                Object scheduler = getSchedulerMethod.invoke(player);
-                if (runDelayedMethod == null) {
-                    runDelayedMethod = scheduler.getClass().getMethod(
-                            "runDelayed",
-                            org.bukkit.plugin.Plugin.class,
-                            Consumer.class,
-                            Runnable.class,
-                            long.class
-                    );
-                }
-                //noinspection unchecked
-                Object scheduled = runDelayedMethod.invoke(
-                        scheduler,
-                        Geyser_Recipe_Fix.instance,
-                        (Consumer<Object>) scheduledTask -> task.run(),
-                        (Runnable) null,
-                        1L
-                );
-                if (scheduled != null) {
-                    return;
-                }
-                // Scheduling failed (e.g. entity already retired) - fall
-                // through to the plain Bukkit scheduler as a best effort.
-            } catch (Throwable t) {
-                // No getScheduler() (plain Spigot), or the API shape
-                // differs from what we expect - stop trying reflection
-                // and just use the ordinary Bukkit scheduler from now on.
-                entitySchedulerUnavailable = true;
-            }
+    /**
+     * Runs {@code task} on the thread that owns {@code player} (the player's
+     * region thread on Folia, the main thread on Paper): on the next tick if
+     * {@code delayTicks} is 0 or less, otherwise after that many ticks. If
+     * the player has been removed before it runs, the task is silently
+     * dropped. Also used by AnvilRenameFix.
+     */
+    public static void runOnPlayerThread(Player player, long delayTicks, Runnable task) {
+        Plugin plugin = (Plugin) Geyser_Recipe_Fix.instance;
+        if (delayTicks <= 0L) {
+            player.getScheduler().run(plugin, scheduled -> task.run(), null);
+        } else {
+            player.getScheduler().runDelayed(plugin, scheduled -> task.run(), null, delayTicks);
         }
-        Bukkit.getScheduler().scheduleSyncDelayedTask((Plugin) Geyser_Recipe_Fix.instance, task, 1L);
     }
 
     /**
      * Opens the real, unmodified vanilla anvil menu for the player, built
      * directly via NMS rather than Paper's {@code Player#openAnvil(...)}
-     * convenience method, so this works identically on Spigot, Paper and
-     * Folia.
+     * convenience method. Only vanilla classes plus CraftPlayer#getHandle
+     * are involved, all of which are stable across Paper and Folia.
      */
     private static void openRealAnvil(Player player) {
         ServerPlayer serverPlayer = ((CraftPlayer) player).getHandle();

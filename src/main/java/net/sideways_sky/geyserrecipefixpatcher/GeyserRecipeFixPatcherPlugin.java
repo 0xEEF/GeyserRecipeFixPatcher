@@ -1,6 +1,7 @@
 package net.sideways_sky.geyserrecipefixpatcher;
 
-import org.bukkit.ChatColor;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -66,8 +67,8 @@ public final class GeyserRecipeFixPatcherPlugin extends JavaPlugin implements Li
         }
         Player player = e.getPlayer();
         if (player.hasPermission("geyserrecipefixpatcher.admin")) {
-            player.sendMessage(ChatColor.GOLD + "[GeyserRecipeFixPatcher] " + ChatColor.YELLOW
-                    + "GeyserRecipeFix was updated - restart the server to load it.");
+            player.sendMessage(Component.text("[GeyserRecipeFixPatcher] ", NamedTextColor.GOLD)
+                    .append(Component.text("GeyserRecipeFix was updated - restart the server to load it.", NamedTextColor.YELLOW)));
         }
     }
 
@@ -84,7 +85,7 @@ public final class GeyserRecipeFixPatcherPlugin extends JavaPlugin implements Li
                 String installedPatcherVersion = runner.state().installedPatcherVersion();
                 sender.sendMessage("Installed GeyserRecipeFix version: " + (installed == null ? "none" : installed)
                         + " (patched by GeyserRecipeFixPatcher v" + (installedPatcherVersion == null ? "none" : installedPatcherVersion)
-                        + "; running v" + getDescription().getVersion() + ")"
+                        + "; running v" + getPluginMeta().getVersion() + ")"
                         + (restartRequired ? " - restart pending!" : ""));
             }
             case "check", "update" -> {

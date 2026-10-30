@@ -32,9 +32,13 @@ Adds one line, `folia-supported: true`, if not already present.
 |---|-------|--------|
 | 1 | `setCost(int, Player)` | The original method is renamed to `setCost$original` (identical body - none of it is modified or reproduced elsewhere), and a new `setCost` is installed that calls the renamed original first, then `AnvilRenameFix.afterSetCost(this, player)` (shipped with this project). |
 
-This fixes upstream issue [#19](https://github.com/AnsonEyre/Geyser-Recipe-Fix/issues/19) - "Enchanting items reset the item name." After every cost recompute, if the anvil's result item is missing a custom name that the input item already has, and the player hasn't typed anything into the rename field, `AnvilRenameFix` copies the input's custom name back onto the result and re-sends that one corrected slot, using the same `ContainerSynchronizer#sendSlotChange` technique `AnvilSim` already uses for its cost indicator.
+This fixes upstream issue [#19](https://github.com/AnsonEyre/Geyser-Recipe-Fix/issues/19) - "Enchanting items reset the item name."
 
-This one reads a Minecraft-internal field (`AnvilMenu#itemName`) via reflection to check whether the player is actively typing a rename, since its exact name couldn't be verified against a live decompile in the environment this patcher was authored in. If that guess is wrong for a given Minecraft version, the fix fails safe: it logs one warning and no-ops rather than risk breaking the anvil GUI.
+**Root cause.** In vanilla's `AnvilMenu#createResult`, a *blank* rename text combined with an input item that already has a custom name means "the player cleared the name": the result has its custom name removed and costs 1 extra level. A normal Java client never triggers this, because its rename box is pre-filled with the item's current name and that name is sent to the server whenever the input slot changes. GeyserRecipeFix's simulated Bedrock GUI has no rename box, so the text stays blank and every custom-named item loses its name.
+
+**Fix.** `AnvilRenameFix.afterSetCost` does what the vanilla client does: if the rename text is blank and the input has a custom name, it calls vanilla's own `AnvilMenu#setItemName(<that name>)`. Vanilla then recomputes the result with "no rename requested", so the original custom name (with any formatting) is kept and no extra level is charged. If the input item is later swapped, the name we injected is replaced/cleared again (only ever a name we injected ourselves; a name typed by a player is never touched). The menu change is performed on the player's own scheduler (region thread on Folia, main thread on Paper), because `setCost` is driven from packet interception and may run on another thread. If vanilla rejects the name (it refuses names over 50 characters), it falls back to copying the name onto the current result by hand (the cost may then be 1 level high).
+
+One Minecraft-internal field (`AnvilMenu#itemName`, the current rename text) is read via reflection, as `AnvilMenu` has no getter for it. If it ever disappears, the fix logs one warning and does nothing, rather than risk breaking the anvil GUI.
 
 ## New classes added to the jar (not upstream's - see `src/main/java/net/sideways_sky/geyserrecipefix/`)
 
@@ -42,12 +46,12 @@ This one reads a Minecraft-internal field (`AnvilMenu#itemName`) via reflection 
   detection + startup log line.
 - `net/sideways_sky/geyserrecipefix/events/FoliaAnvilBridge.class` -
   Folia-safe replacement for the old "close inventory, wait a tick, open
-  the real anvil" flow: prefers the per-entity scheduler (via reflection,
-  so it still runs fine on plain Paper/Spigot where that API doesn't
-  exist) and falls back to the plain Bukkit scheduler otherwise.
+  the real anvil" flow, run through the player's entity scheduler (region
+  thread on Folia, main thread on Paper). The legacy BukkitScheduler is not
+  used anywhere, since Folia throws for it.
 - `net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class` -
-  restores a dropped custom name onto the anvil result (issue #19, see
-  above).
+  keeps a custom-named item's name through the simulated anvil (issue #19,
+  see above).
 
 ## Compile-only stand-ins (never packaged)
 

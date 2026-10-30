@@ -5,10 +5,16 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.AnvilMenu;
 import net.minecraft.world.item.ItemStack;
+import net.sideways_sky.geyserrecipefix.Geyser_Recipe_Fix;
+import net.sideways_sky.geyserrecipefix.events.FoliaAnvilBridge;
 import org.bukkit.craftbukkit.entity.CraftPlayer;
 import org.bukkit.entity.Player;
 
 import java.lang.reflect.Field;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -16,35 +22,51 @@ import java.util.logging.Logger;
  * Original code contributed by GeyserRecipeFixPatcher.
  *
  * Fixes upstream issue https://github.com/AnsonEyre/Geyser-Recipe-Fix/issues/19 -
- * "Enchanting items reset the item name": combining a custom-named item with
- * an enchanted book in GeyserRecipeFix's simulated Bedrock anvil GUI drops
- * the item's existing custom name, even though the player never touched the
- * rename field.
+ * "Enchanting items reset the item name".
+ *
+ * Root cause (vanilla AnvilMenu#createResult): when the anvil's "rename text"
+ * is blank and the input item already has a custom name, vanilla treats that
+ * as "the player cleared the name" - it strips the custom name from the
+ * result and adds 1 level to the cost. A normal Java client never hits this,
+ * because its rename box is pre-filled with the item's current name and it
+ * sends that name to the server whenever the input slot changes. The
+ * simulated Bedrock GUI has no rename box, so the text stays blank and every
+ * custom-named item loses its name.
+ *
+ * Fix: do exactly what the vanilla client does - tell the menu the rename
+ * text is the input item's current name (AnvilMenu#setItemName). Vanilla then
+ * sees "no rename requested", keeps the original custom name (including any
+ * formatting) and charges no extra level. We also undo our own injected name
+ * if the input item is swapped for a different one, as a Java client would.
  *
  * This is NOT part of the official Geyser Recipe Fix plugin. At patch time,
  * GeyserRecipeFixPatcher renames the original {@code AnvilSim.setCost(int,
  * Player)} method to {@code setCost$original} (identical body, just a new
  * name) and installs a new {@code setCost} in its place that calls the
- * renamed original first, then calls {@link #afterSetCost} here - so all of
- * AnvilSim's own logic (including its private cost-indicator rendering)
- * still runs completely unmodified, we only ever add a step after it.
+ * renamed original first, then {@link #afterSetCost} here - so all of
+ * AnvilSim's own logic still runs completely unmodified.
  *
- * How the fix works: after every cost recompute, if the anvil's real,
- * server-side result item is missing a custom name that the input item (the
- * item being repaired/enchanted) already has, and the player hasn't typed
- * anything into the rename field for this operation, we copy the input's
- * custom name back onto the result and re-send just that one corrected
- * slot - the same technique AnvilSim itself already uses for its cost
- * indicator (ContainerSynchronizer#sendSlotChange).
+ * Threading: setCost is driven from packet interception and may run off the
+ * player's thread, so this class only does cheap read-only checks there and
+ * performs the actual menu change on the player's own scheduler (the region
+ * thread on Folia, the main thread on Paper).
  */
 public final class AnvilRenameFix {
 
-    // AnvilSim.AnvilSlot.FIRST.backIdx / .RESULT.backIdx - hardcoded here
-    // rather than referencing the enum, since they're a stable, tiny detail
-    // (0 = the primary input slot, 2 = the anvil's result slot) and this
-    // avoids needing a compile-time stub for a nested enum.
+    // AnvilMenu.INPUT_SLOT / AnvilMenu.RESULT_SLOT (stable vanilla constants).
     private static final int FIRST_SLOT = 0;
     private static final int RESULT_SLOT = 2;
+
+    // NOTE: deliberately no nested/inner classes in here. Each injected class
+    // is spliced into the target jar as exactly one .class file (see
+    // JarPatcher#listInjectedClasses and the bundleInjectedClasses task in
+    // build.gradle); a nested class would be a second file that nothing
+    // copies, and this fix would silently die with NoClassDefFoundError.
+
+    /** The rename text we injected per menu, so we only ever undo a name that we injected ourselves. */
+    private static final Map<AnvilMenu, String> AUTO_NAMES = Collections.synchronizedMap(new WeakHashMap<>());
+    /** Menus that already have a fix queued on the player's thread. */
+    private static final Set<AnvilMenu> PENDING = Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>()));
 
     private static volatile Field itemNameField;
     private static volatile boolean warnedOnce = false;
@@ -54,65 +76,121 @@ public final class AnvilRenameFix {
 
     public static void afterSetCost(AnvilSim sim, Player player) {
         try {
-            if (!(sim.menu instanceof AnvilMenu advMenu)) {
+            if (!(sim.menu instanceof AnvilMenu menu)) {
                 return;
             }
-
-            String typedName = readTypedRenameText(advMenu);
-            if (typedName != null && !typedName.isBlank()) {
-                // The player is deliberately renaming this operation -
-                // don't override whatever name they're typing.
-                return;
+            if (desiredName(menu) == null || !PENDING.add(menu)) {
+                return; // nothing to fix, or a fix is already queued
             }
-
-            ItemStack input = advMenu.getSlot(FIRST_SLOT).getItem();
-            if (!input.has(DataComponents.CUSTOM_NAME)) {
-                return; // nothing to restore
+            try {
+                FoliaAnvilBridge.runOnPlayerThread(player, 0L, () -> {
+                    try {
+                        apply(menu, player);
+                    } catch (Throwable t) {
+                        warn(t);
+                    } finally {
+                        PENDING.remove(menu);
+                    }
+                });
+            } catch (Throwable t) {
+                PENDING.remove(menu);
+                throw t;
             }
-            Component expectedName = input.get(DataComponents.CUSTOM_NAME);
-
-            ItemStack result = advMenu.getSlot(RESULT_SLOT).getItem();
-            if (result.isEmpty()) {
-                return;
-            }
-            Component currentName = result.get(DataComponents.CUSTOM_NAME);
-            if (expectedName.equals(currentName)) {
-                return; // already correct
-            }
-
-            result.set(DataComponents.CUSTOM_NAME, expectedName);
-
-            ServerPlayer serverPlayer = ((CraftPlayer) player).getHandle();
-            serverPlayer.containerSynchronizer.sendSlotChange(sim.menu, RESULT_SLOT, result);
         } catch (Throwable t) {
-            // Fail safe: if anything about this NMS version's shape doesn't
-            // match what we expect, silently skip the fix rather than risk
-            // breaking the anvil GUI entirely. Log once so it's noticeable
-            // in the console without spamming on every anvil interaction.
-            if (!warnedOnce) {
-                warnedOnce = true;
-                Logger.getLogger("GeyserRecipeFixPatcher").log(Level.WARNING,
-                        "[GeyserRecipeFixPatcher] Could not apply the anvil custom-name fix "
-                        + "(upstream issue #19) - this Minecraft/Paper version's internals may "
-                        + "have changed. The rest of the patch is unaffected.", t);
-            }
+            warn(t);
         }
     }
 
     /**
-     * Reads whatever the player has currently typed into the anvil's rename
-     * field, via reflection so a wrong guess at the field name fails safe
-     * (see the catch-all above) instead of breaking compilation or the
-     * whole plugin. Expected to be an empty string (not null) when nothing
-     * has been typed.
+     * What the rename text should be right now, or null if it is already
+     * correct. Purely read-only, so it is safe to call from any thread.
      */
-    private static String readTypedRenameText(AnvilMenu advMenu) throws ReflectiveOperationException {
-        if (itemNameField == null) {
-            Field f = AnvilMenu.class.getDeclaredField("itemName");
+    private static String desiredName(AnvilMenu menu) throws ReflectiveOperationException {
+        String typed = readTypedRenameText(menu);
+        ItemStack input = menu.getSlot(FIRST_SLOT).getItem();
+        String inputName = !input.isEmpty() && input.has(DataComponents.CUSTOM_NAME)
+                ? input.getHoverName().getString()
+                : null;
+        String auto = AUTO_NAMES.get(menu);
+        boolean typedIsOurs = auto != null && typed.equals(auto);
+
+        if (inputName != null) {
+            if (inputName.isBlank()) {
+                return null; // vanilla can't represent a blank name in the rename box either
+            }
+            if (typed.isBlank() || (typedIsOurs && !typed.equals(inputName))) {
+                return inputName;
+            }
+            return null;
+        }
+        // The input has no custom name (or is empty): drop a leftover name we injected for a previous item.
+        return typedIsOurs ? "" : null;
+    }
+
+    private static void apply(AnvilMenu menu, Player player) throws ReflectiveOperationException {
+        ServerPlayer serverPlayer = ((CraftPlayer) player).getHandle();
+        if (serverPlayer.containerMenu != menu) {
+            return; // the anvil was closed or replaced before this ran
+        }
+        String desired = desiredName(menu); // re-check on the owning thread
+        if (desired == null) {
+            return;
+        }
+        if (menu.setItemName(desired)) {
+            // Vanilla recomputed the result (and re-sent it) using the new rename text.
+            if (desired.isEmpty()) {
+                AUTO_NAMES.remove(menu);
+            } else {
+                AUTO_NAMES.put(menu, desired);
+            }
+            return;
+        }
+        // Vanilla refused the text (names over 50 characters are rejected). Fall back to
+        // copying the name onto the current result by hand; the cost may be 1 level high.
+        if (!desired.isEmpty()) {
+            restoreResultNameInPlace(menu);
+        }
+    }
+
+    private static void restoreResultNameInPlace(AnvilMenu menu) {
+        ItemStack input = menu.getSlot(FIRST_SLOT).getItem();
+        ItemStack result = menu.getSlot(RESULT_SLOT).getItem();
+        if (result.isEmpty() || !input.has(DataComponents.CUSTOM_NAME)) {
+            return;
+        }
+        Component expected = input.get(DataComponents.CUSTOM_NAME);
+        if (expected == null || expected.equals(result.get(DataComponents.CUSTOM_NAME))) {
+            return;
+        }
+        result.set(DataComponents.CUSTOM_NAME, expected);
+        menu.broadcastChanges();
+    }
+
+    /**
+     * Reads whatever rename text the menu currently holds. AnvilMenu has no
+     * getter for it, hence reflection on the private {@code itemName} field
+     * (present in 1.21.x through 26.3). Returns "" when nothing was typed.
+     */
+    private static String readTypedRenameText(AnvilMenu menu) throws ReflectiveOperationException {
+        Field f = itemNameField;
+        if (f == null) {
+            f = AnvilMenu.class.getDeclaredField("itemName");
             f.setAccessible(true);
             itemNameField = f;
         }
-        Object value = itemNameField.get(advMenu);
-        return value == null ? null : value.toString();
+        Object value = f.get(menu);
+        return value == null ? "" : value.toString();
+    }
+
+    private static void warn(Throwable t) {
+        // Fail safe: if this server version's internals don't match what we expect,
+        // skip the fix rather than risk breaking the anvil GUI. Log once only.
+        if (!warnedOnce) {
+            warnedOnce = true;
+            Logger logger = Geyser_Recipe_Fix.logger != null ? Geyser_Recipe_Fix.logger : Logger.getLogger("GeyserRecipeFixPatcher");
+            logger.log(Level.WARNING, "[GeyserRecipeFixPatcher] Could not apply the anvil custom-name fix "
+                    + "(upstream issue #19) - this server version's internals may have changed. "
+                    + "The rest of the patch is unaffected.", t);
+        }
     }
 }
