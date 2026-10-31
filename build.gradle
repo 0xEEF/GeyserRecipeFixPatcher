@@ -10,7 +10,7 @@ plugins {
 }
 
 group = 'net.sideways_sky.geyserrecipefixpatcher'
-version = '1.1.0'
+version = '1.2.1'
 
 repositories {
     mavenCentral()
@@ -72,6 +72,7 @@ tasks.register('bundleInjectedClasses', Copy) {
     include 'net/sideways_sky/geyserrecipefix/FoliaRuntimeSupport.class'
     include 'net/sideways_sky/geyserrecipefix/events/FoliaAnvilBridge.class'
     include 'net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class'
+    include 'net/sideways_sky/geyserrecipefix/PaperCompat.class'
 
     // Guard: every injected class must be exactly ONE .class file. A nested,
     // inner or anonymous class (Outer$Inner.class) would be a second file

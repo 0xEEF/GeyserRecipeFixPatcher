@@ -99,6 +99,10 @@ public final class PatchRunner {
 
             log.accept("Applying local patches...");
             jarPatcher.patch(downloaded, targetJar, getClass().getClassLoader());
+            if (jarPatcher.lastCompatRewrites() > 0) {
+                log.accept("Redirected " + jarPatcher.lastCompatRewrites()
+                        + " Paper-specific call(s) that newer Paper versions removed or locked down.");
+            }
 
             state.setInstalledVersion(target.versionNumber());
             state.setInstalledPatcherVersion(currentPatcherVersion);

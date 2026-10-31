@@ -37,9 +37,17 @@ public final class JarPatcher {
      * @param injectedClassLoader used to read the raw bytes of our own injected
      *                            helper classes, bundled as resources in this plugin's jar
      */
+    private int compatRewrites = 0;
+
+    /** How many Paper-compat redirects (see PaperCompatTransformer) the last patch() applied. */
+    public int lastCompatRewrites() {
+        return compatRewrites;
+    }
+
     public void patch(Path sourceJar, Path destinationJar, ClassLoader injectedClassLoader)
             throws IOException, UnsupportedUpstreamVersionException {
 
+        compatRewrites = 0;
         boolean mainClassSeen = false;
         boolean paperEventsSeen = false;
         boolean anvilSimSeen = false;
@@ -89,6 +97,17 @@ public final class JarPatcher {
 
                 } else {
                     data = jar.getInputStream(entry).readAllBytes();
+                }
+
+                if (entry.getName().endsWith(".class") && PaperCompatTransformer.mightNeedRewrite(data)) {
+                    ClassReader compatReader = new ClassReader(data);
+                    ClassWriter compatWriter = new ClassWriter(compatReader, 0);
+                    PaperCompatTransformer compat = new PaperCompatTransformer(compatWriter);
+                    compatReader.accept(compat, 0);
+                    if (compat.rewrites() > 0) {
+                        data = compatWriter.toByteArray();
+                        compatRewrites += compat.rewrites();
+                    }
                 }
 
                 JarEntry outEntry = new JarEntry(entry.getName());
@@ -158,7 +177,8 @@ public final class JarPatcher {
         return List.of(
                 "net/sideways_sky/geyserrecipefix/FoliaRuntimeSupport.class",
                 "net/sideways_sky/geyserrecipefix/events/FoliaAnvilBridge.class",
-                "net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class"
+                "net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class",
+                "net/sideways_sky/geyserrecipefix/PaperCompat.class"
         );
     }
 }

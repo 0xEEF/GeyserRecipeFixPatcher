@@ -40,6 +40,17 @@ This fixes upstream issue [#19](https://github.com/AnsonEyre/Geyser-Recipe-Fix/i
 
 One Minecraft-internal field (`AnvilMenu#itemName`, the current rename text) is read via reflection, as `AnvilMenu` has no getter for it. If it ever disappears, the fix logs one warning and does nothing, rather than risk breaking the anvil GUI.
 
+## Every class in the jar: Paper-compat redirects
+
+A final generic pass (`PaperCompatTransformer`) runs over every `.class` in the downloaded jar and redirects two Paper-specific things that the official build was compiled against but that newer Paper versions removed or locked down, into same-shaped methods in the injected `PaperCompat` class. Both are pure call-site swaps with identical stack effects; no method bodies are copied or reproduced.
+
+| Old reference in upstream's bytecode | Replaced by | Why |
+|---|---|---|
+| `ItemStack.fromBukkitCopy(bukkit ItemStack)` | `PaperCompat.fromBukkitCopy(...)` -> `CraftItemStack.asNMSCopy(...)` | A Paper-added method on the vanilla `ItemStack`; gone on Paper 26.3, where right-clicking an anvil disconnected Bedrock players with `NoSuchMethodError`. |
+| `GETFIELD ServerPlayer.containerSynchronizer` | `PaperCompat.containerSynchronizer(player)` (reads the field reflectively) | A private vanilla field that Paper exposed through an access transformer; reading it reflectively works whether or not that still exists. |
+
+The pass first does a cheap byte search for the two names so classes that can't contain them are never parsed. The patcher logs how many redirects it applied.
+
 ## New classes added to the jar (not upstream's - see `src/main/java/net/sideways_sky/geyserrecipefix/`)
 
 - `net/sideways_sky/geyserrecipefix/FoliaRuntimeSupport.class` - Folia
@@ -52,6 +63,8 @@ One Minecraft-internal field (`AnvilMenu#itemName`, the current rename text) is 
 - `net/sideways_sky/geyserrecipefix/inventories/AnvilRenameFix.class` -
   keeps a custom-named item's name through the simulated anvil (issue #19,
   see above).
+- `net/sideways_sky/geyserrecipefix/PaperCompat.class` - the stable
+  replacements the Paper-compat redirects above point at.
 
 ## Compile-only stand-ins (never packaged)
 
